@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_DEBUG=false
+      - MODEL_PATH=/app/models
+      - API_KEY=${API_KEY:-dev-key-12345}
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  websocket:
+    build: .
+    command: python src/deployment/api/websocket_server.py
+    ports:
+      - "8765:8765"
+    environment:
+      - MODEL_PATH=/app/models
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: streamlit run src/deployment/dashboard/app.py --server.port=8501
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api:5000/predict
+      - MODEL_INFO_URL=http://api:5000/model/info
+      - METRICS_URL=http://api:5000/metrics
+      - API_KEY=${API_KEY:-dev-key-12345}
+    depends_on:
+      - api
+    restart: unless-stopped

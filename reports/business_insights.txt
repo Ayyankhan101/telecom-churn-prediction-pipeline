@@ -1,0 +1,24 @@
+
+KEY BUSINESS INSIGHTS:
+======================
+1. Contract Type is critical: Month-to-month customers churn at ~32% 
+   vs ~15% for two-year contracts. Push upgrades.
+
+2. Tenure matters: New customers (<12 months) churn at ~34%.
+   Focus retention efforts on first year.
+
+3. Payment Method: Electronic check users churn more (28%).
+   Incentivize automatic payment methods.
+
+4. Fiber optic customers churn higher (29%) despite paying more.
+   May indicate service quality issues.
+
+5. Multiple support calls = high churn risk. 
+   Track customers with 3+ calls - intervention needed.
+
+RECOMMENDATIONS:
+- Offer incentives for contract upgrades (1yr → 2yr)
+- Early detection system for customers with high support calls  
+- Promote automatic payment methods
+- Investigate fiber optic service quality
+- Target new customer retention (first 12 months)
