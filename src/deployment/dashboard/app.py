@@ -1,19 +1,90 @@
 import streamlit as st
-import requests
 import pandas as pd
+import numpy as np
 import os
 import time
+import joblib
 import plotly.graph_objects as go
 import plotly.express as px
+from pathlib import Path
+import sys
+
+# Add project root to path for local imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from src.deployment.api.shared import preprocess_input
+from src.deployment.api.utils import FEATURE_ORDER
 
 # ============================================================================
-# Configuration
+# Model Loading (Self-Contained)
 # ============================================================================
-API_URL = os.environ.get('API_URL', 'http://localhost:5000/predict')
-MODEL_INFO_URL = os.environ.get('MODEL_INFO_URL', 'http://localhost:5000/model/info')
-METRICS_URL = os.environ.get('METRICS_URL', 'http://localhost:5000/metrics')
-API_KEY = os.environ.get('API_KEY', 'dev-key-12345')
-HEADERS = {"Authorization": f"Bearer {API_KEY}"}
+@st.cache_resource
+def load_models():
+    """Load and cache the models for performance."""
+    model_dir = Path(__file__).resolve().parents[3] / "models"
+    try:
+        model = joblib.load(model_dir / "best_model.joblib")
+        scaler = joblib.load(model_dir / "scaler.joblib")
+        encoders = joblib.load(model_dir / "encoders.joblib")
+        
+        # Load version info
+        version_file = model_dir / "version.json"
+        version_data = {}
+        if version_file.exists():
+            import json
+            with open(version_file) as f:
+                version_data = json.load(f)
+        
+        return {
+            'model': model,
+            'scaler': scaler,
+            'encoders': encoders,
+            'version': version_data.get('version', '1.0.0'),
+            'status': 'loaded'
+        }
+    except Exception as e:
+        return {'status': 'error', 'error': str(e)}
+
+# ============================================================================
+# Local Prediction Helper
+# ============================================================================
+def predict_local(customer_data, models_dict):
+    """Perform prediction using loaded models."""
+    if models_dict['status'] != 'loaded':
+        return {'error': models_dict.get('error', 'Models not loaded')}
+    
+    try:
+        model = models_dict['model']
+        scaler = models_dict['scaler']
+        encoders = models_dict['encoders']
+        
+        # Preprocess
+        X = preprocess_input(customer_data, encoders=encoders, scaler=scaler)
+        
+        # Predict
+        prediction_val = model.predict(X)[0]
+        probability = model.predict_proba(X)[0]
+        
+        # Feature Importance (Local)
+        if hasattr(model, 'coef_'):
+            importance = model.coef_[0]
+        elif hasattr(model, 'feature_importances_'):
+            importance = model.feature_importances_
+        else:
+            importance = np.zeros(len(FEATURE_ORDER))
+
+        feat_imp = dict(zip(FEATURE_ORDER, importance))
+        sorted_features = sorted(feat_imp.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+        
+        return {
+            'prediction': 'Churn' if prediction_val == 1 else 'No Churn',
+            'churn_probability': float(probability[1]),
+            'no_churn_probability': float(probability[0]),
+            'top_features': [f[0] for f in sorted_features],
+            'importance_values': [float(f[1]) for f in sorted_features]
+        }
+    except Exception as e:
+        return {'error': str(e)}
 
 # ============================================================================
 # Custom Theme Configuration
@@ -220,90 +291,14 @@ class NarrativeBuilder:
 
 
 # ============================================================================
-# API Connection Helper
+# Sidebar - Local Status
 # ============================================================================
-class APIConnection:
-    """Robust API connection with retry logic"""
-    
-    def __init__(self):
-        self.base_urls = self._get_base_urls()
-        self._health_status = None
-        self._model_info = None
-    
-    def _get_base_urls(self):
-        urls = []
-        if '/predict' in API_URL:
-            urls.append(API_URL.split('/predict')[0])
-        if '/model/info' in MODEL_INFO_URL:
-            urls.append(MODEL_INFO_URL.split('/model/info')[0])
-        if '/metrics' in METRICS_URL:
-            urls.append(METRICS_URL.split('/metrics')[0])
-        # Fallbacks
-        urls.extend(['http://localhost:5000', 'http://127.0.0.1:5000'])
-        return list(dict.fromkeys(urls))  # Remove dupes, preserve order
-    
-    def check_health(self):
-        """Check API health with fallback URLs"""
-        for base_url in self.base_urls:
-            try:
-                resp = requests.get(f"{base_url}/health", timeout=3)
-                if resp.status_code == 200:
-                    self._health_status = {'status': 'connected', 'url': base_url}
-                    return self._health_status
-            except:
-                continue
-        
-        self._health_status = {'status': 'offline', 'url': None}
-        return self._health_status
-    
-    def get_model_info(self):
-        """Get model info"""
-        if not self._health_status or self._health_status['status'] != 'connected':
-            return None
-        try:
-            resp = requests.get(
-                f"{self._health_status['url']}/model/info",
-                headers=HEADERS,
-                timeout=5
-            )
-            if resp.status_code == 200:
-                self._model_info = resp.json()
-                return self._model_info
-        except:
-            pass
-        return None
-    
-    def predict(self, customer_data):
-        """Make prediction"""
-        if not self._health_status or self._health_status['status'] != 'connected':
-            return {'error': 'API offline'}
-        
-        try:
-            base = self._health_status['url']
-            resp = requests.post(
-                f"{base}/predict",
-                json=customer_data,
-                headers=HEADERS,
-                timeout=30
-            )
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                return {'error': f'HTTP {resp.status_code}'}
-        except Exception as e:
-            return {'error': str(e)}
-
-
-# ============================================================================
-# Sidebar - API Status
-# ============================================================================
-api = APIConnection()
-health = api.check_health()
+models_dict = load_models()
 
 with st.sidebar:
-    st.markdown("### ⚡ API Status")
+    st.markdown("### ⚡ System Status")
     
-    if health['status'] == 'connected':
+    if models_dict['status'] == 'loaded':
         st.markdown(f"""
         <div style="
             background: linear-gradient(135deg, #00d4aa22, #00b89422);
@@ -313,19 +308,17 @@ with st.sidebar:
             text-align: center;
         ">
             <span style="font-size: 2rem;">🟢</span><br>
-            <strong style="color: #00d4aa;">Connected</strong><br>
-            <small style="color: #888;">{health['url']}</small>
+            <strong style="color: #00d4aa;">System Ready</strong><br>
+            <small style="color: #888;">Models Loaded Locally</small>
         </div>
         """, unsafe_allow_html=True)
         
-        model_info = api.get_model_info()
-        if model_info:
-            st.markdown(f"""
-            <div style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-                <small style="color: #888;">Model Version</small><br>
-                <strong style="color: #e8e8e8;">{model_info.get('version', 'N/A')}</strong>
-            </div>
-            """, unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+            <small style="color: #888;">Model Version</small><br>
+            <strong style="color: #e8e8e8;">{models_dict.get('version', 'N/A')}</strong>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         st.markdown(f"""
         <div style="
@@ -336,18 +329,12 @@ with st.sidebar:
             text-align: center;
         ">
             <span style="font-size: 2rem;">🔴</span><br>
-            <strong style="color: #ff6b6b;">Offline</strong>
+            <strong style="color: #ff6b6b;">Error</strong><br>
+            <small style="color: #888;">Failed to load models</small>
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown("""
-        <div style="margin-top: 15px; padding: 10px; background: rgba(255,100,100,0.1); border-radius: 8px;">
-            <small style="color: #ff6b6b;">Start API:</small>
-            <code style="display: block; color: #888; margin-top: 5px; font-size: 0.75rem;">
-            python src/deployment/api/app.py
-            </code>
-        </div>
-        """, unsafe_allow_html=True)
+        st.error(f"Load Error: {models_dict.get('error')}")
     
     st.markdown("---")
     st.markdown("### ℹ️ About")
@@ -420,8 +407,8 @@ with st.container():
 predict_clicked = st.button("⚡ Predict Churn", type="primary", use_container_width=True)
 
 if predict_clicked:
-    if health['status'] == 'offline':
-        st.error("API is offline. Start the API first.")
+    if models_dict['status'] == 'error':
+        st.error("Cannot perform prediction: Models not loaded.")
     else:
         customer_data = {
             "gender": gender,
@@ -449,7 +436,7 @@ if predict_clicked:
         
         with st.spinner("Decoding the story..."):
             time.sleep(1.2) # Anticipation
-            result = api.predict(customer_data)
+            result = predict_local(customer_data, models_dict)
         
         if 'error' in result:
             st.error(f"Error: {result['error']}")
@@ -457,27 +444,10 @@ if predict_clicked:
             prediction = result.get('prediction', 'Unknown')
             churn_prob = result.get('churn_probability', 0)
             no_churn_prob = result.get('no_churn_probability', 0)
+            feat_names = result.get('top_features', [])
+            feat_vals = result.get('importance_values', [])
             
-            # Fetch feature importance from API
-            try:
-                resp = requests.get(
-                    f"{health['url']}/model/feature-importance",
-                    headers=HEADERS,
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    importance_data = resp.json()
-                    feat_names = importance_data.get('top_features', [])
-                    feat_vals = importance_data.get('importance_values', [])
-                    st.session_state.feature_importance = (feat_names, feat_vals)
-                else:
-                    feat_names = ['Contract Type', 'Tenure', 'Monthly Charges', 'Internet Service', 'Support Calls']
-                    feat_vals = [0.35, 0.28, 0.18, 0.12, 0.07]
-                    st.session_state.feature_importance = (feat_names, feat_vals)
-            except:
-                feat_names = ['Contract Type', 'Tenure', 'Monthly Charges', 'Internet Service', 'Support Calls']
-                feat_vals = [0.35, 0.28, 0.18, 0.12, 0.07]
-                st.session_state.feature_importance = (feat_names, feat_vals)
+            st.session_state.feature_importance = (feat_names, feat_vals)
 
             # Reveal 1: Narrative
             narrative_html = NarrativeBuilder.build(customer_data, prediction, churn_prob, feat_names)

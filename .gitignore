@@ -40,7 +40,7 @@ htmlcov/
 .tox/
 
 # Models & Data
-models/*.joblib
+# models/*.joblib  <-- Removed ignore to allow deployment
 models/*.pkl
 data/raw/
 data/processed/
